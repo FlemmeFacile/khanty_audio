@@ -1,5 +1,3 @@
-# Khanty Text-to-Speech using Transfer Learning
-
 ## Technical Architecture
 - **Base Model**: VITS (Variational Inference with adversarial learning for end-to-end Text-to-Speech)
 - **Feature Extraction**: wav2vec 2.0 for pseudo-phoneme extraction
@@ -24,7 +22,7 @@ A two-stage transfer learning approach:
 
 ## Team Members
 
-Our group from the Khanty project (3 people):
+Our group is the same, from the Khanty project (3 people):
 
 - Lena
 - Anna
