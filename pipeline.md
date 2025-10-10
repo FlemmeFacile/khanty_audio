@@ -2,7 +2,7 @@
 - **Base Model**: VITS 
 - **Feature Extraction**: wav2vec 2.0 for pseudo-phoneme extraction
 - **Training Strategy**: Two-stage transfer learning with component freezing
-- **Fine-tuning**: Selective training of text encoder and normalizing flow
+- **Fine-tuning**: Selective training of text encoder and normalising flow
 
 ## Project Description
 
