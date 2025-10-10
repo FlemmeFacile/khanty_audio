@@ -3,7 +3,7 @@
 ## 1. Working Title
 Transfer Learning for Khanty language TTS Using Pseudo-Phoneme Representations
 
-This project aims to implement the approach from the paper [Transfer Learning Framework for Low-Resource Text-to-Speech using a Large-Scale Unlabeled Speech Corpus]. We plan to train a model on Finnish and/or Hungarian audio, followed by fine-tuning on our Khanty data. We have 80 minutes of Khanty audio, which according to the paper, should be sufficient. The use of pseudo-phonemes is a key part of the method.
+This project aims to implement the approach from the paper [Transfer Learning Framework for Low-Resource Text-to-Speech using a Large-Scale Unlabeled Speech Corpus](https://doi.org/10.21437/Interspeech.2022-225). We plan to train a model on Finnish and/or Hungarian audio, followed by fine-tuning on our Khanty data. We have 80 minutes of Khanty audio, which according to the paper, should be sufficient. The use of pseudo-phonemes is a key part of the method.
 
 ## 2. Problem Statement
 Khanty language has very few speakers and limited audio resources. To develop a chatbot for learning Khanty, it is important to have synthesised speech not only from stories but also from dictionary entries and other available materials.
