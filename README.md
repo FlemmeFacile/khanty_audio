@@ -45,7 +45,7 @@ Applying transfer learning with pseudo-phoneme representations can significantly
 - [Primary work](https://doi.org/10.21437/Interspeech.2022-225) on low-resource TTS with pseudo-phonemes.
 - wav2vec 2.0 paper for self-supervised speech representation learning: [Baevski et al., 2020](https://doi.org/10.48550/arXiv.2006.11477).
 - VITS original model paper: [Kim et al., 2021](https://arxiv.org/pdf/2106.06103). 
-- GlowTTS [Kim et al., 2020](https://arxiv.org/pdf/2005.11129) and FastSpeech2 [Ren et al., 2020](https://arxiv.org/abs/2006.04558) references for baselines.
+- GlowTTS: [Kim et al., 2020](https://arxiv.org/pdf/2005.11129) and FastSpeech2: [Ren et al., 2020](https://arxiv.org/abs/2006.04558) references for baselines.
 - Research on agglutinative low-resource TTS with morphology-aware pretraining: [IEEE paper](https://ieeexplore.ieee.org/abstract/document/10379131/references#references).
 
 ## 8. Timeline
@@ -57,8 +57,3 @@ Applying transfer learning with pseudo-phoneme representations can significantly
 | Experiments            | 4 weeks     | Pretrain, fine-tune, compare with baselines            |
 | Analysis & Evaluation  | 4 weeks     | Subjective and objective evaluation                     |
 | Finalisation           | 3-4 weeks   | Refinements, documentation                              |
-
----
-
-Feel free to modify or expand this README as needed.
-If you want, I can also help prepare the initial commit or GitHub setup for this file.
