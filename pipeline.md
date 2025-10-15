@@ -4,6 +4,7 @@ flowchart LR
     B --> C[Pre-trained<br>TTS Model]
     C --> D[Fine-tuning on<br>Khanty Data]
     D --> E[Final Khanty<br>TTS System]
+```
 
 ## Description
 
