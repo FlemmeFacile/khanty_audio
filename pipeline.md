@@ -1,9 +1,9 @@
 ```mermaid
 flowchart LR
-    A[Finnish/Hungarian\nUnlabeled Speech] --> B[Pre-training\nwav2vec 2.0 + VITS]
-    B --> C[Pre-trained\nTTS Model]
-    C --> D[Fine-tuning on\nKhanty Data]
-    D --> E[Final Khanty\nTTS System]
+    A[Finnish/Hungarian Unlabeled Speech] --> B[Pre-training wav2vec 2.0 + VITS]
+    B --> C[Pre-trained TTS Model]
+    C --> D[Fine-tuning on Khanty Data]
+    D --> E[Final Khanty TTS System]
 ```
 
 ## Description
