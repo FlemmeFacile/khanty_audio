@@ -1,0 +1,103 @@
+
+############### перед началом ###########################
+cd C:\Users\Александр\voxpopuli
+venv311\Scripts\activate
+pip install -r requirements.txt
+pip install hf_xet
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126 
+pip install torchaudio transformers librosa soundfile scikit-learn accelerate joblib tqdm
+################################################################
+
+------------------ по желанию ----------------------------------
+copy "C:\Users\Александр\Desktop\k-means.py" .
+--------------------------------------------------------------------
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+При запросе "Перезаписать существующую модель?" отвечайте N (нет)
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+%%%%%%%%%%%%%%% основной код %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+# 1. Обучение K-Means 
+python k-means.py train_kmeans --audio_dir "H:\tts\fin\unlabelled_data_wav\fi" --output_dir "H:\tts\fin\outputs\full_kmeans" --wav2vec_model "C:\Users\Александр\Desktop\wav2vec2-large-lv60" --layer_index 15 --k_clusters 128 --force_retrain --log_level INFO
+
+после прерывания запускать это
+python k-means.py train_kmeans --audio_dir "H:\tts\fin\unlabelled_data_wav\fi" --output_dir "H:\tts\fin\outputs\full_kmeans" --wav2vec_model "C:\Users\Александр\Desktop\wav2vec2-large-lv60" --layer_index 15 --k_clusters 128 --log_level INFO
+
+# 2. Полная генерация псевдо-фонем
+python k-means.py generate_pseudophones --audio_dir "H:\tts\fin\unlabelled_data_wav\fi" --output_dir "H:\tts\fin\outputs\full_kmeans" --wav2vec_model "C:\Users\Александр\Desktop\wav2vec2-large-lv60" --layer_index 15 --k_clusters 128 --speaker_id "fi_speaker" --log_level INFO
+
+после прерывания запускать это
+python k-means.py generate_pseudophones --audio_dir "H:\tts\fin\unlabelled_data_wav\fi" --output_dir "H:\tts\fin\outputs\full_kmeans" --wav2vec_model "C:\Users\Александр\Desktop\wav2vec2-large-lv60" --layer_index 15 --k_clusters 128 --speaker_id "fi_speaker" --log_level INFO
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+;;;;;;;;;;;;;; Для венгерского, после того как с финским всё ;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+copy "C:\Users\Александр\Desktop\k-means_h.py" .
+
+%%%%%%%%%%%%%%% основной код %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+# 1. Обучение K-Means 
+python k-means_h.py train_kmeans --audio_dir "H:\tts\hun\unlabelled_data_wav\hu" --output_dir "H:\tts\hun\outputs\full_kmeans" --wav2vec_model "C:\Users\Александр\Desktop\wav2vec2-large-lv60" --layer_index 15 --k_clusters 128 --force_retrain --log_level INFO
+
+после прерывания запускать это
+python k-means_h.py train_kmeans --audio_dir "H:\tts\hun\unlabelled_data_wav\hu" --output_dir "H:\tts\hun\outputs\full_kmeans" --wav2vec_model "C:\Users\Александр\Desktop\wav2vec2-large-lv60" --layer_index 15 --k_clusters 128 --log_level INFO
+
+# 2. Полная генерация псевдо-фонем
+python k-means_h.py generate_pseudophones --audio_dir "H:\tts\hun\unlabelled_data_wav\hu" --output_dir "H:\tts\hun\outputs\full_kmeans" --wav2vec_model "C:\Users\Александр\Desktop\wav2vec2-large-lv60" --layer_index 15 --k_clusters 128 --speaker_id "fi_speaker" --log_level INFO
+
+после прерывания запускать это
+python k-means_h.py generate_pseudophones --audio_dir "H:\tts\hun\unlabelled_data_wav\hu" --output_dir "H:\tts\hun\outputs\full_kmeans" --wav2vec_model "C:\Users\Александр\Desktop\wav2vec2-large-lv60" --layer_index 15 --k_clusters 128 --speaker_id "fi_speaker" --log_level INFO
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+
+
+
+
+
+
+
+
+старое
+
+------------------ по желанию ----------------------------------
+xcopy "C:\Users\Александр\Desktop\get_unlabelled_data_new.py" .
+xcopy "C:\Users\Александр\Desktop\finalfinalfinal.py" .
+
+
+
+
+###################### сегментация ##############################
+-------------------------- финский -----------------------------
+python -m get_unlabelled_data_new --root H:\tts\fin --subset fi
+
+------------------------ венгерский -----------------------------
+python -m get_unlabelled_data_new --root H:\tts\hun --subset hu
+################################################################
+
+
+
+
+
+
+остановить: shift+crtl+C
+
+
+
+
+
+
+k-means
+
+
+
+pip install torch torchaudio transformers librosa soundfile scikit-learn accelerate joblib tqdm
+
+
+
