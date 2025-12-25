@@ -20,6 +20,7 @@
   },
   "data": {
     "training_files": "C:/Users/Александр/voxpopuli/vits/filelists/finnish_pseudo_clean.txt",
+    "training_files_dir": "H:/tts/fin/unlabelled_data_wav/fi", 
     "validation_files": "C:/Users/Александр/voxpopuli/vits/filelists/finnish_pseudo_val.txt",
     "text_cleaners": [],
     "max_wav_value": 32768.0,
