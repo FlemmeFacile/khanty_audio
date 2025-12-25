@@ -7,6 +7,9 @@ from models import SynthesizerTrn
 from data_utils import get_dataset
 from torch.nn.utils import clip_grad_norm_
 
+import random
+import shutil
+
 # ------------------------------
 # 1️⃣ Загрузка конфигурации
 # ------------------------------
@@ -16,6 +19,22 @@ with open("configs/fi_pseudo_pretrain.json", "r", encoding="utf-8") as f:
 train_config = config["train"]
 data_config = config["data"]
 model_config = config["model"]
+
+# === Параметры поднабора ===
+subset_dir = r"H:\tts\fin\subset_wav_22050"
+source_dir = data_config["training_files_dir"]  # обязательно добавь этот ключ в json
+num_files = 1000  # количество файлов поднабор
+
+os.makedirs(subset_dir, exist_ok=True)
+all_files = [f for f in os.listdir(source_dir) if f.endswith(".wav")]
+subset_files = random.sample(all_files, num_files)
+
+for f in subset_files:
+    shutil.copy(os.path.join(source_dir, f), os.path.join(subset_dir, f))
+
+print(f"✅ Поднабор для предобучения: {len(subset_files)} файлов")
+# меняем путь в конфиге на поднабор
+data_config["training_files"] = subset_dir
 
 # ------------------------------
 # 2️⃣ Датасет
@@ -35,14 +54,11 @@ class HParams:
         self.min_text_len = data_config.get("min_text_len", 1)       
         self.max_text_len = data_config.get("max_text_len", 1000)    
         self.segment_size = train_config["segment_size"]
-        self.n_speakers = 0 
-        self.distributed_run = False 
-        self.use_pseudo_text_encoder = True 
         self.n_speakers = 0
         self.distributed_run = False
+        self.use_pseudo_text_encoder = True
         self.world_size = 1
         self.rank = 0 
-
 
 hparams = HParams()
 train_dataset, train_loader = get_dataset(
@@ -58,7 +74,7 @@ val_dataset, val_loader = get_dataset(
     batch_size=train_config["batch_size"]
 )
 
-print(f"✅ Train batches: {len(train_loader)}")  # 🔥 len(LOADER)!
+print(f"✅ Train batches: {len(train_loader)}")
 print(f"✅ Val batches: {len(val_loader)}")
 
 # ------------------------------
@@ -126,34 +142,41 @@ def load_checkpoint(model, optimizer, path):
 # ------------------------------
 # 6️⃣ Функция обучения одной эпохи
 # ------------------------------
-def train_one_epoch(model, dataloader, optimizer, device, train=True):
+def train_one_epoch(model, dataloader, optimizer, device, epoch, train=True, checkpoint_dir="checkpoints", checkpoint_interval=1000):
     model.train() if train else model.eval()
     total_loss = 0.0
-    
-    for batch in dataloader:
-        # ✅ Полный VITS batch
+
+    for step, batch in enumerate(dataloader, start=1):
         x, x_lengths, spec, spec_lengths, y, y_lengths, spk_ids = [b.to(device) for b in batch]
-        
+
         if train:
             optimizer.zero_grad()
-        
-        # ✅ Полный VITS forward
+
         o, l_length, attn, ids_slice, x_mask, y_mask, *_ = model(
             x, x_lengths, spec, spec_lengths, y, y_lengths, spk_ids
         )
-        
-        # ✅ VITS duration loss (на старте)
+
         loss = l_length.mean()
-        
+
         if train:
             loss.backward()
             clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-        
-        total_loss += loss.item()
-    
-    return total_loss / len(dataloader)
 
+        total_loss += loss.item()
+
+        # Сохраняем промежуточный чекпоинт каждые N шагов
+        if train and step % checkpoint_interval == 0:
+            step_checkpoint = os.path.join(checkpoint_dir, f"checkpoint_epoch{epoch}_step{step}.pt")
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict()
+            }, step_checkpoint)
+            print(f"💾 Сохранили промежуточный чекпоинт: {step_checkpoint}")
+
+    avg_loss = total_loss / len(dataloader)
+    return avg_loss
 
 # ------------------------------
 # 7️⃣ Основной цикл
@@ -168,19 +191,19 @@ log_interval = train_config.get("log_interval", 1)
 eval_interval = train_config.get("eval_interval", 5)
 
 for epoch in range(start_epoch, num_epochs + 1):
-    train_loss = train_one_epoch(synth, train_loader, optimizer, device, train=True)
+    train_loss = train_one_epoch(synth, train_loader, optimizer, device, epoch, train=True)
     
     if epoch % log_interval == 0:
         print(f"[Epoch {epoch}] train_loss: {train_loss:.6f}")
     
     if epoch % eval_interval == 0:
-        val_loss = train_one_epoch(synth, val_loader, optimizer=None, device=device, train=False)
+        val_loss = train_one_epoch(synth, val_loader, optimizer=None, device=device, epoch=epoch, train=False)
         print(f"[Epoch {epoch}] val_loss: {val_loss:.6f}")
     
-    # сохраняем последний чекпоинт для продолжения
+    # Сохраняем последний чекпоинт
     save_checkpoint(synth, optimizer, epoch, latest_checkpoint)
 
-    # сохраняем "вечный" чекпоинт каждые 1000 эпох
+    # "Вечный" чекпоинт каждые 1000 эпох
     if epoch % 1000 == 0:
         checkpoint_path = os.path.join(checkpoint_dir, f"synth_epoch_{epoch}.pt")
         save_checkpoint(synth, optimizer, epoch, checkpoint_path)
