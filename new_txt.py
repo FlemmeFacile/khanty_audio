@@ -1,6 +1,6 @@
 import os
 
-source_txt = r"H:\tts\fin\filelists\finnish_pseudo_clean.txt"
+source_txt = r"H:\tts\fin\outputs\full_kmeans\finnish_pseudo_for_vits.txt"
 subset_txt = r"H:\tts\fin\subset_wav_list.txt"
 
 # 🔥 ТВОЯ НОВАЯ ПАПКА С 22050 WAV!
