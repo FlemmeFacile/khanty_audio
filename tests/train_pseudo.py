@@ -1,589 +1,216 @@
-import copy
-import math
+import os
+import json
 import torch
-from torch import nn
-from torch.nn import functional as F
-
-import commons
-import modules
-import attentions
-import monotonic_align
-
-from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
-from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
-from commons import init_weights, get_padding
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import numpy as np
+import random
+import time
+import gc
+from multiprocessing import freeze_support, set_start_method
 
 # ------------------------------
-# Duration Predictors
+# 0️⃣ ИМПОРТЫ ДО torch.cuda
 # ------------------------------
-class StochasticDurationPredictor(nn.Module):
-    def __init__(self, in_channels, filter_channels, kernel_size, p_dropout, n_flows=4, gin_channels=0):
-        super().__init__()
-        filter_channels = in_channels  # для совместимости
-        self.in_channels = in_channels
-        self.filter_channels = filter_channels
-        self.kernel_size = kernel_size
-        self.p_dropout = p_dropout
-        self.n_flows = n_flows
-        self.gin_channels = gin_channels
-        self.log_flow = modules.Log()
-        self.flows = nn.ModuleList()
-        self.flows.append(modules.ElementwiseAffine(2))
-        for i in range(n_flows):
-            self.flows.append(modules.ConvFlow(2, filter_channels, kernel_size, n_layers=3))
-            self.flows.append(modules.Flip())
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
 
-        self.post_pre = nn.Conv1d(1, filter_channels, 1)
-        self.post_proj = nn.Conv1d(filter_channels, filter_channels, 1)
-        self.post_convs = modules.DDSConv(filter_channels, kernel_size, n_layers=3, p_dropout=p_dropout)
-        self.post_flows = nn.ModuleList()
-        self.post_flows.append(modules.ElementwiseAffine(2))
-        for i in range(4):
-            self.post_flows.append(modules.ConvFlow(2, filter_channels, kernel_size, n_layers=3))
-            self.post_flows.append(modules.Flip())
-
-        self.pre = nn.Conv1d(in_channels, filter_channels, 1)
-        self.proj = nn.Conv1d(filter_channels, filter_channels, 1)
-        self.convs = modules.DDSConv(filter_channels, kernel_size, n_layers=3, p_dropout=p_dropout)
-        if gin_channels != 0:
-            self.cond = nn.Conv1d(gin_channels, filter_channels, 1)
-
-    def forward(self, x, x_mask, w=None, g=None, reverse=False, noise_scale=1.0):
-        x = torch.detach(x)
-        x = self.pre(x)
-        if g is not None:
-            g = torch.detach(g)
-            x = x + self.cond(g)
-        x = self.convs(x, x_mask)
-        x = self.proj(x) * x_mask
-
-        if not reverse:
-            flows = self.flows
-            assert w is not None
-
-            logdet_tot_q = 0 
-            h_w = self.post_pre(w)
-            h_w = self.post_convs(h_w, x_mask)
-            h_w = self.post_proj(h_w) * x_mask
-            e_q = torch.randn(w.size(0), 2, w.size(2)).to(device=x.device, dtype=x.dtype) * x_mask
-            z_q = e_q
-            for flow in self.post_flows:
-                z_q, logdet_q = flow(z_q, x_mask, g=(x + h_w))
-                logdet_tot_q += logdet_q
-            z_u, z1 = torch.split(z_q, [1, 1], 1) 
-            u = torch.sigmoid(z_u) * x_mask
-            z0 = (w - u) * x_mask
-            logdet_tot_q += torch.sum((F.logsigmoid(z_u) + F.logsigmoid(-z_u)) * x_mask, [1,2])
-            logq = torch.sum(-0.5 * (math.log(2*math.pi) + (e_q**2)) * x_mask, [1,2]) - logdet_tot_q
-
-            logdet_tot = 0
-            z0, logdet = self.log_flow(z0, x_mask)
-            logdet_tot += logdet
-            z = torch.cat([z0, z1], 1)
-            for flow in flows:
-                z, logdet = flow(z, x_mask, g=x, reverse=reverse)
-                logdet_tot = logdet_tot + logdet
-            nll = torch.sum(0.5 * (math.log(2*math.pi) + (z**2)) * x_mask, [1,2]) - logdet_tot
-            return nll + logq
-        else:
-            flows = list(reversed(self.flows))
-            flows = flows[:-2] + [flows[-1]]
-            z = torch.randn(x.size(0), 2, x.size(2)).to(device=x.device, dtype=x.dtype) * noise_scale
-            for flow in flows:
-                z = flow(z, x_mask, g=x, reverse=reverse)
-            z0, z1 = torch.split(z, [1, 1], 1)
-            logw = z0
-            return logw
-
-
-class DurationPredictor(nn.Module):
-    def __init__(self, in_channels, filter_channels, kernel_size, p_dropout, gin_channels=0):
-        super().__init__()
-        self.in_channels = in_channels
-        self.filter_channels = filter_channels
-        self.kernel_size = kernel_size
-        self.p_dropout = p_dropout
-        self.gin_channels = gin_channels
-
-        self.drop = nn.Dropout(p_dropout)
-        self.conv_1 = nn.Conv1d(in_channels, filter_channels, kernel_size, padding=kernel_size//2)
-        self.norm_1 = modules.LayerNorm(filter_channels)
-        self.conv_2 = nn.Conv1d(filter_channels, filter_channels, kernel_size, padding=kernel_size//2)
-        self.norm_2 = modules.LayerNorm(filter_channels)
-        self.proj = nn.Conv1d(filter_channels, 1, 1)
-
-        if gin_channels != 0:
-            self.cond = nn.Conv1d(gin_channels, in_channels, 1)
-
-    def forward(self, x, x_mask, g=None):
-        x = torch.detach(x)
-        if g is not None:
-            g = torch.detach(g)
-            x = x + self.cond(g)
-        x = self.conv_1(x * x_mask)
-        x = torch.relu(x)
-        x = self.norm_1(x)
-        x = self.drop(x)
-        x = self.conv_2(x * x_mask)
-        x = torch.relu(x)
-        x = self.norm_2(x)
-        x = self.drop(x)
-        x = self.proj(x * x_mask)
-        return x * x_mask
+print("🔥 VITS TRAINING STARTED")
 
 # ------------------------------
-# Text Encoder
+# 1️⃣ Конфигурация
 # ------------------------------
-class TextEncoder(nn.Module):
-    def __init__(self,
-                 n_vocab,
-                 out_channels,
-                 hidden_channels,
-                 filter_channels,
-                 n_heads,
-                 n_layers,
-                 kernel_size,
-                 p_dropout):
-        super().__init__()
-        self.n_vocab = n_vocab
-        self.out_channels = out_channels
-        self.hidden_channels = hidden_channels
-        self.filter_channels = filter_channels
-        self.n_heads = n_heads
-        self.n_layers = n_layers
-        self.kernel_size = kernel_size
-        self.p_dropout = p_dropout
+with open("configs/fi_pseudo_pretrain.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
 
-        self.emb = nn.Embedding(n_vocab, hidden_channels)
-        nn.init.normal_(self.emb.weight, 0.0, hidden_channels**-0.5)
+train_config = config["train"]
+data_config = config["data"]
+model_config = config["model"]
 
-        self.encoder = attentions.Encoder(
-            hidden_channels,
-            filter_channels,
-            n_heads,
-            n_layers,
-            kernel_size,
-            p_dropout)
-        self.proj= nn.Conv1d(hidden_channels, out_channels * 2, 1)
-
-    def forward(self, x, x_lengths):
-        x = self.emb(x) * math.sqrt(self.hidden_channels)
-        x = torch.transpose(x, 1, -1)
-        x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
-        x = self.encoder(x * x_mask, x_mask)
-        stats = self.proj(x) * x_mask
-        m, logs = torch.split(stats, self.out_channels, dim=1)
-        return x, m, logs, x_mask
+print(f"✅ Config loaded: {len(config)} sections")
 
 # ------------------------------
-# PseudoTextEncoder
+# 2️⃣ Инициализация
 # ------------------------------
-class PseudoTextEncoder(nn.Module):
-    """
-    Легкий conv энкодер для pseudo-токенов (MFCC k-means, ASR).
-    Input: [B, T] LongTensor → Output: [B, C, T] features
-    """
-    def __init__(self, n_vocab, hidden_channels, kernel_size, n_layers):
-        super().__init__()
-        self.emb = nn.Embedding(n_vocab, hidden_channels)
-        layers = []
-        for _ in range(n_layers):
-            layers.append(nn.Conv1d(hidden_channels, hidden_channels, kernel_size, padding=kernel_size // 2))
-            layers.append(nn.ReLU())
-        self.net = nn.Sequential(*layers)
+torch.manual_seed(train_config["seed"])
+random.seed(train_config["seed"])
+np.random.seed(train_config["seed"])
 
-    def forward(self, x):  # НЕ принимает x_lengths!
-        x = self.emb(x)        # [B, T, C]
-        x = x.transpose(1, 2)  # [B, C, T]
-        x = self.net(x)
-        return x
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(train_config["seed"])
+    torch.cuda.empty_cache()
+    print(f"🎮 GPU: {torch.cuda.get_device_name(0)} | VRAM: {torch.cuda.get_device_properties(0).total_memory/1024**3:.1f}GB")
+
 # ------------------------------
-# Остальная часть моделей
+# 3️⃣ Импорты после CUDA init
 # ------------------------------
+from data_utils import TextAudioLoader, TextAudioCollate
+from models import SynthesizerTrn
 
+class HParams:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
-class ResidualCouplingBlock(nn.Module):
-  def __init__(self,
-      channels,
-      hidden_channels,
-      kernel_size,
-      dilation_rate,
-      n_layers,
-      n_flows=4,
-      gin_channels=0):
-    super().__init__()
-    self.channels = channels
-    self.hidden_channels = hidden_channels
-    self.kernel_size = kernel_size
-    self.dilation_rate = dilation_rate
-    self.n_layers = n_layers
-    self.n_flows = n_flows
-    self.gin_channels = gin_channels
+hparams = HParams(**{
+    "text_cleaners": data_config.get("text_cleaners", []),
+    "max_wav_value": data_config.get("max_wav_value", 32768.0),
+    "sampling_rate": data_config.get("sampling_rate", 16000),
+    "filter_length": data_config.get("filter_length", 1024),
+    "hop_length": data_config.get("hop_length", 256),
+    "win_length": data_config.get("win_length", 1024),
+    "n_mel_channels": 80,
+    "mel_fmin": data_config.get("mel_fmin", 0.0),
+    "mel_fmax": 8000.0,
+    "add_blank": False,
+    "min_text_len": 1,
+    "max_text_len": 1000,
+    "use_pseudo_text_encoder": True,
+    "n_speakers": 0
+})
 
-    self.flows = nn.ModuleList()
-    for i in range(n_flows):
-      self.flows.append(modules.ResidualCouplingLayer(channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels, mean_only=True))
-      self.flows.append(modules.Flip())
+# ------------------------------
+# 4️⃣ Датасеты
+# ------------------------------
+batch_size = 2
+num_workers = 0
 
-  def forward(self, x, x_mask, g=None, reverse=False):
-    if not reverse:
-      for flow in self.flows:
-        x, _ = flow(x, x_mask, g=g, reverse=reverse)
-    else:
-      for flow in reversed(self.flows):
-        x = flow(x, x_mask, g=g, reverse=reverse)
-    return x
+print("🔄 Loading datasets...")
+train_dataset = TextAudioLoader(data_config["training_files"], hparams)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
+                         num_workers=num_workers, pin_memory=True, collate_fn=TextAudioCollate())
 
+val_dataset = TextAudioLoader(data_config["validation_files"], hparams)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, 
+                       num_workers=num_workers, pin_memory=True, collate_fn=TextAudioCollate())
 
-class PosteriorEncoder(nn.Module):
-  def __init__(self,
-      in_channels,
-      out_channels,
-      hidden_channels,
-      kernel_size,
-      dilation_rate,
-      n_layers,
-      gin_channels=0):
-    super().__init__()
-    self.in_channels = in_channels
-    self.out_channels = out_channels
-    self.hidden_channels = hidden_channels
-    self.kernel_size = kernel_size
-    self.dilation_rate = dilation_rate
-    self.n_layers = n_layers
-    self.gin_channels = gin_channels
+print(f"✅ Train: {len(train_loader)} batches | Val: {len(val_loader)} batches")
 
-    self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
-    self.enc = modules.WN(hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels)
-    self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
+# ------------------------------
+# 5️⃣ Модель
+# ------------------------------
+device = "cuda" if torch.cuda.is_available() else "cpu"
+synth = SynthesizerTrn(
+    n_vocab=model_config['n_vocab'],
+    spec_channels=80,  # ✅ MEL!
+    segment_size=2048,
+    inter_channels=model_config['inter_channels'],
+    hidden_channels=model_config['hidden_channels'],
+    filter_channels=model_config['filter_channels'],
+    n_heads=model_config['n_heads'],
+    n_layers=model_config['n_layers'],
+    kernel_size=model_config['kernel_size'],
+    p_dropout=model_config['p_dropout'],
+    resblock=model_config['resblock'],
+    resblock_kernel_sizes=model_config['resblock_kernel_sizes'],
+    resblock_dilation_sizes=model_config['resblock_dilation_sizes'],
+    upsample_rates=model_config['upsample_rates'],
+    upsample_initial_channel=model_config['upsample_initial_channel'],
+    upsample_kernel_sizes=model_config['upsample_kernel_sizes'],
+    n_speakers=0,
+    gin_channels=0,
+    use_pseudo_text_encoder=True
+).to(device)
 
-  def forward(self, x, x_lengths, g=None):
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
-    x = self.pre(x) * x_mask
-    x = self.enc(x, x_mask, g=g)
-    stats = self.proj(x) * x_mask
-    m, logs = torch.split(stats, self.out_channels, dim=1)
-    z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
-    return z, m, logs, x_mask
+print(f"✅ Model loaded: {sum(p.numel() for p in synth.parameters()):,} params")
 
+optimizer = torch.optim.AdamW(synth.parameters(), lr=2e-4, betas=(0.8, 0.99), eps=1e-9)
 
-class Generator(torch.nn.Module):
-    def __init__(self, initial_channel, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=0):
-        super(Generator, self).__init__()
-        self.num_kernels = len(resblock_kernel_sizes)
-        self.num_upsamples = len(upsample_rates)
-        self.conv_pre = Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3)
-        
-        resblock = modules.ResBlock1 if resblock == '1' else modules.ResBlock2
+# ------------------------------
+# 6️⃣ Loss функции
+# ------------------------------
+def kl_loss(z_p, logs_q, m_p, logs_p, y_mask):
+    kl = logs_p - logs_q - 0.5
+    kl += 0.5 * ((z_p - m_p) ** 2) * torch.exp(-2. * logs_p)
+    kl = torch.sum(kl * y_mask.float())
+    denom = torch.sum(y_mask.float())
+    return kl / (denom + 1e-8)
 
-        self.ups = nn.ModuleList()
-        for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
-            self.ups.append(weight_norm(
-                ConvTranspose1d(upsample_initial_channel//(2**i), upsample_initial_channel//(2**(i+1)),
-                                k, u, padding=(k-u)//2)))
+# ------------------------------
+# 7️⃣ Training loop
+# ------------------------------
+checkpoint_dir = "checkpoints"
+os.makedirs(checkpoint_dir, exist_ok=True)
 
-        self.resblocks = nn.ModuleList()
-        for i in range(len(self.ups)):
-            ch = upsample_initial_channel//(2**(i+1))
-            for j, (k, d) in enumerate(zip(resblock_kernel_sizes, resblock_dilation_sizes)):
-                self.resblocks.append(resblock(ch, k, d))
+def save_checkpoint(epoch):
+    torch.save({
+        'epoch': epoch,
+        'model': synth.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'hparams': vars(hparams)
+    }, f"checkpoints/epoch_{epoch}.pt")
+    print(f"💾 Saved epoch {epoch}")
 
+# ------------------------------
+# 8️⃣ MAIN TRAINING
+# ------------------------------
+print("\n🚀 START TRAINING!")
+for epoch in range(1, 501):
+    synth.train()
+    total_loss = 0
+    batch_count = 0
     
-        final_ch = upsample_initial_channel // (2**len(upsample_rates))
-        self.conv_post = Conv1d(final_ch, 1, 7, 1, padding=3, bias=False)
-        self.ups.apply(init_weights)
-
-        if gin_channels != 0:
-            self.cond = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
-
-    def forward(self, x, g=None):
-        x = self.conv_pre(x)
-        if g is not None:
-            x = x + self.cond(g)
-
-        for i in range(self.num_upsamples):
-            x = F.leaky_relu(x, modules.LRELU_SLOPE)
-            x = self.ups[i](x)
-            xs = None
-            for j in range(self.num_kernels):
-                if xs is None:
-                    xs = self.resblocks[i*self.num_kernels+j](x)
-                else:
-                    xs += self.resblocks[i*self.num_kernels+j](x)
-            x = xs / self.num_kernels
-        x = F.leaky_relu(x)
-        x = self.conv_post(x)
-        x = torch.tanh(x)
-        return x
-
-    def remove_weight_norm(self):
-        print('Removing weight norm...')
-        for l in self.ups:
-            remove_weight_norm(l)
-        for l in self.resblocks:
-            l.remove_weight_norm()
-
-class DiscriminatorP(torch.nn.Module):
-    def __init__(self, period, kernel_size=5, stride=3, use_spectral_norm=False):
-        super(DiscriminatorP, self).__init__()
-        self.period = period
-        self.use_spectral_norm = use_spectral_norm
-        norm_f = weight_norm if use_spectral_norm == False else spectral_norm
-        self.convs = nn.ModuleList([
-            norm_f(Conv2d(1, 32, (kernel_size, 1), (stride, 1), padding=(get_padding(kernel_size, 1), 0))),
-            norm_f(Conv2d(32, 128, (kernel_size, 1), (stride, 1), padding=(get_padding(kernel_size, 1), 0))),
-            norm_f(Conv2d(128, 512, (kernel_size, 1), (stride, 1), padding=(get_padding(kernel_size, 1), 0))),
-            norm_f(Conv2d(512, 1024, (kernel_size, 1), (stride, 1), padding=(get_padding(kernel_size, 1), 0))),
-            norm_f(Conv2d(1024, 1024, (kernel_size, 1), 1, padding=(get_padding(kernel_size, 1), 0))),
-        ])
-        self.conv_post = norm_f(Conv2d(1024, 1, (3, 1), 1, padding=(1, 0)))
-
-    def forward(self, x):
-        fmap = []
-
-        # 1d to 2d
-        b, c, t = x.shape
-        if t % self.period != 0: # pad first
-            n_pad = self.period - (t % self.period)
-            x = F.pad(x, (0, n_pad), "reflect")
-            t = t + n_pad
-        x = x.view(b, c, t // self.period, self.period)
-
-        for l in self.convs:
-            x = l(x)
-            x = F.leaky_relu(x, modules.LRELU_SLOPE)
-            fmap.append(x)
-        x = self.conv_post(x)
-        fmap.append(x)
-        x = torch.flatten(x, 1, -1)
-
-        return x, fmap
-
-
-class DiscriminatorS(torch.nn.Module):
-    def __init__(self, use_spectral_norm=False):
-        super(DiscriminatorS, self).__init__()
-        norm_f = weight_norm if use_spectral_norm == False else spectral_norm
-        self.convs = nn.ModuleList([
-            norm_f(Conv1d(1, 16, 15, 1, padding=7)),
-            norm_f(Conv1d(16, 64, 41, 4, groups=4, padding=20)),
-            norm_f(Conv1d(64, 256, 41, 4, groups=16, padding=20)),
-            norm_f(Conv1d(256, 1024, 41, 4, groups=64, padding=20)),
-            norm_f(Conv1d(1024, 1024, 41, 4, groups=256, padding=20)),
-            norm_f(Conv1d(1024, 1024, 5, 1, padding=2)),
-        ])
-        self.conv_post = norm_f(Conv1d(1024, 1, 3, 1, padding=1))
-
-    def forward(self, x):
-        fmap = []
-
-        for l in self.convs:
-            x = l(x)
-            x = F.leaky_relu(x, modules.LRELU_SLOPE)
-            fmap.append(x)
-        x = self.conv_post(x)
-        fmap.append(x)
-        x = torch.flatten(x, 1, -1)
-
-        return x, fmap
-
-
-class MultiPeriodDiscriminator(torch.nn.Module):
-    def __init__(self, use_spectral_norm=False):
-        super(MultiPeriodDiscriminator, self).__init__()
-        periods = [2,3,5,7,11]
-
-        discs = [DiscriminatorS(use_spectral_norm=use_spectral_norm)]
-        discs = discs + [DiscriminatorP(i, use_spectral_norm=use_spectral_norm) for i in periods]
-        self.discriminators = nn.ModuleList(discs)
-
-    def forward(self, y, y_hat):
-        y_d_rs = []
-        y_d_gs = []
-        fmap_rs = []
-        fmap_gs = []
-        for i, d in enumerate(self.discriminators):
-            y_d_r, fmap_r = d(y)
-            y_d_g, fmap_g = d(y_hat)
-            y_d_rs.append(y_d_r)
-            y_d_gs.append(y_d_g)
-            fmap_rs.append(fmap_r)
-            fmap_gs.append(fmap_g)
-
-        return y_d_rs, y_d_gs, fmap_rs, fmap_gs
-
-
-class SynthesizerTrn(nn.Module):
-    """
-    VITS Synthesizer с поддержкой TextEncoder ↔ PseudoTextEncoder
-    """
-    def __init__(self, 
-        n_vocab, spec_channels, segment_size, inter_channels, hidden_channels,
-        filter_channels, n_heads, n_layers, kernel_size, p_dropout, resblock, 
-        resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, 
-        upsample_initial_channel, upsample_kernel_sizes, n_speakers=0,
-        gin_channels=0, use_sdp=True, **kwargs):
-
-        super().__init__()
-        # Сохраняем параметры
-        self.n_vocab = n_vocab
-        self.spec_channels = spec_channels
-        self.inter_channels = inter_channels
-        self.hidden_channels = hidden_channels
-        self.filter_channels = filter_channels
-        self.n_heads = n_heads
-        self.n_layers = n_layers
-        self.kernel_size = kernel_size
-        self.p_dropout = p_dropout
-        self.resblock = resblock
-        self.resblock_kernel_sizes = resblock_kernel_sizes
-        self.resblock_dilation_sizes = resblock_dilation_sizes
-        self.upsample_rates = upsample_rates
-        self.upsample_initial_channel = upsample_initial_channel
-        self.upsample_kernel_sizes = upsample_kernel_sizes
-        self.segment_size = segment_size
-        self.n_speakers = n_speakers
-        self.gin_channels = gin_channels
-        self.use_sdp = use_sdp
-        self.hop_length = kwargs.get('hop_length', 256)
-
-        self.use_pseudo_text_encoder = kwargs.get("use_pseudo_text_encoder", False)
+    print(f"\n🔥 EPOCH {epoch}/500")
+    
+    for batch_idx, batch in enumerate(train_loader):
+        try:
+            # Unpack batch
+            x, x_lengths, mel, mel_lengths, y, y_lengths = batch
         
-        if self.use_pseudo_text_encoder:
-            pse_params = kwargs.get("pseudo_text_encoder_params", {})
-            self.enc_p = PseudoTextEncoder(
-                n_vocab=n_vocab,
-                hidden_channels=pse_params.get('hidden_channels', hidden_channels),
-                kernel_size=pse_params.get('kernel_size', 5),
-                n_layers=pse_params.get('n_layers', 4)
-            )
-            print("Используется PseudoTextEncoder (voice conversion mode)")
-        else:
-            self.enc_p = TextEncoder(
-                n_vocab, inter_channels, hidden_channels, filter_channels,
-                n_heads, n_layers, kernel_size, p_dropout
-            )
-            print("Используется TextEncoder (TTS mode)")
+            # ✅ DEBUG ПЕРВЫЙ БАТЧ
+            if batch_idx == 0:
+                print(f"🔥 BATCH 0 SHAPES:")
+                print(f"  mel: {mel.shape}")  # ДОЛЖНО [2, 80, XXXX]
+                print(f"  y: {y.shape}") 
+            
+            # To GPU
+            x = x.to(device, non_blocking=True)
+            x_lengths = x_lengths.to(device, non_blocking=True)
+            mel = mel.to(device, non_blocking=True)
+            mel_lengths = mel_lengths.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+            y_lengths = y_lengths.to(device, non_blocking=True)
+            
+            optimizer.zero_grad()
+            
+            # Forward
+            with torch.cuda.amp.autocast(enabled=True):
+                output = synth(x, x_lengths, mel, mel_lengths, None)
+                y_hat, l_length, _, _, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q) = output
+                
+                # Losses
+                loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, y_mask) * 1.0
+                loss_dur = l_length.mean()
+                loss = loss_kl + loss_dur
+            
+            # Backward
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(synth.parameters(), 1.0)
+            optimizer.step()
+            
+            total_loss += loss.item()
+            batch_count += 1
+            
+            if batch_idx % 50 == 0:
+                print(f"  Batch {batch_idx}: loss={loss.item():.4f} (kl={loss_kl.item():.4f}, dur={loss_dur.item():.4f})")
+            
+            # Memory cleanup
+            del x, mel, y, y_hat, loss
+            torch.cuda.empty_cache()
+            
+        except Exception as e:
+            print(f"⚠️ Skip batch {batch_idx}: {str(e)[:100]}")
+            torch.cuda.empty_cache()
+            continue
+    
+    avg_loss = total_loss / max(batch_count, 1)
+    print(f"✅ EPOCH {epoch} COMPLETE | Loss: {avg_loss:.4f} | Batches: {batch_count}")
+    
+    # Save
+    if epoch % 10 == 0:
+        save_checkpoint(epoch)
+    
+    torch.cuda.empty_cache()
+    gc.collect()
 
-        # Остальные компоненты без изменений
-        self.dec = Generator(inter_channels, resblock, resblock_kernel_sizes, 
-                           resblock_dilation_sizes, upsample_rates, 
-                           upsample_initial_channel, upsample_kernel_sizes, 
-                           gin_channels=gin_channels)
-        self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 
-                                    5, 1, 16, gin_channels=gin_channels)
-        self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, 
-                                        gin_channels=gin_channels)
-
-        if use_sdp:
-            self.dp = StochasticDurationPredictor(hidden_channels, 192, 3, 0.5, 4, 
-                                                gin_channels=gin_channels)
-        else:
-            self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)
-
-        if n_speakers > 1:
-            self.emb_g = nn.Embedding(n_speakers, gin_channels)
-
-    def forward(self, x, x_lengths, y, y_lengths, sid=None):
-
-        if self.use_pseudo_text_encoder:
-            # Pseudo: [B,T] → [B,C,T], priors = zeros
-            x = self.enc_p(x)  # Только features!
-            x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
-            m_p = torch.zeros_like(x)     # N(0,I) prior
-            logs_p = torch.zeros_like(x)  # N(0,I) prior
-        else:
-            # TextEncoder: полный вывод
-            x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
-
-        # Спикер (без изменений)
-        if self.n_speakers > 0:
-            g = self.emb_g(sid).unsqueeze(-1)
-        else:
-            g = None
-
-        # Posterior + flow (без изменений)
-        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
-        z_p = self.flow(z, y_mask, g=g)
-
-        # Alignment (без изменений)
-        with torch.no_grad():
-            s_p_sq_r = torch.exp(-2 * logs_p)
-            neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, [1], keepdim=True)
-            neg_cent2 = torch.matmul(-0.5 * (z_p ** 2).transpose(1, 2), s_p_sq_r)
-            neg_cent3 = torch.matmul(z_p.transpose(1, 2), (m_p * s_p_sq_r))
-            neg_cent4 = torch.sum(-0.5 * (m_p ** 2) * s_p_sq_r, [1], keepdim=True)
-            neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
-
-            attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-            attn = monotonic_align.maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
-
-        # Duration loss (без изменений)
-        w = attn.sum(2)
-        if self.use_sdp:
-            l_length = self.dp(x, x_mask, w, g=g) / torch.sum(x_mask)
-        else:
-            logw_ = torch.log(w + 1e-6) * x_mask
-            logw = self.dp(x, x_mask, g=g)
-            l_length = torch.sum((logw - logw_)**2, [1,2]) / torch.sum(x_mask)
-
-        # Expand prior (без изменений)
-        m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-        logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
-
-        segment_size_frames = self.segment_size // self.hop_length
-        # Проверяем, что segment_size_frames не слишком большой
-        if segment_size_frames > z.shape[-1]:
-            segment_size_frames = z.shape[-1] - 1
-            print(f"⚠️ Предупреждение: segment_size_frames уменьшен до {segment_size_frames}")
-
-        z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, segment_size_frames)
-        o = self.dec(z_slice, g=g)
-
-        return o, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
-
-    def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None):
- 
-        if self.use_pseudo_text_encoder:
-            x = self.enc_p(x)
-            x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
-            m_p = torch.zeros_like(x)
-            logs_p = torch.zeros_like(x)
-        else:
-            x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
-
-        if self.n_speakers > 0:
-            g = self.emb_g(sid).unsqueeze(-1)
-        else:
-            g = None
-
-        # Duration predictor (без изменений)
-        if self.use_sdp:
-            logw = self.dp(x, x_mask, g=g, reverse=True, noise_scale=noise_scale_w)
-        else:
-            logw = self.dp(x, x_mask, g=g)
-        w = torch.exp(logw) * x_mask * length_scale
-        w_ceil = torch.ceil(w)
-        y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
-        y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
-        attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-        attn = commons.generate_path(w_ceil, attn_mask)
-
-        # Sampling (без изменений)
-        m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-        logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
-        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
-        z = self.flow(z_p, y_mask, g=g, reverse=True)
-        o = self.dec((z * y_mask)[:,:,:max_len], g=g)
-        return o, attn, y_mask, (z, z_p, m_p, logs_p)
-
-    def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
-     
-        assert self.n_speakers > 0
-        g_src = self.emb_g(sid_src).unsqueeze(-1)
-        g_tgt = self.emb_g(sid_tgt).unsqueeze(-1)
-        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g_src)
-        z_p = self.flow(z, y_mask, g=g_src)
-        z_hat = self.flow(z_p, y_mask, g=g_tgt, reverse=True)
-        o_hat = self.dec(z_hat * y_mask, g=g_tgt)
-        return o_hat, y_mask, (z, z_p, z_hat)
+print("🎉 TRAINING FINISHED!")
+save_checkpoint("final")
