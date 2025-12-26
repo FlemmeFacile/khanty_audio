@@ -151,11 +151,9 @@ print(f"🔒 Frozen: {total_params - trainable_params:,} params")
 print(f"🔓 Trainable: {trainable_params:,} params (text_encoder, dp, flow)")
 
 
-
 # ------------------------------
 # 8️⃣ Создание оптимизатора ТОЛЬКО для обучаемых параметров
 # ------------------------------
-# Обучаем ТОЛЬКО: text_encoder, duration_predictor (dp), normalizing flow
 params_to_optimize = (
     list(synth.text_encoder.parameters()) +
     list(synth.dp.parameters()) +
@@ -164,15 +162,37 @@ params_to_optimize = (
 
 optimizer = torch.optim.AdamW(
     params_to_optimize,
-    lr=train_config.get("learning_rate", 1e-4),  # можно задать в config
+    lr=train_config.get("learning_rate", 1e-4),
     betas=(0.8, 0.99),
     eps=1e-9
 )
 print("✅ Optimizer created for trainable components only")
 
 
+
+
 # ------------------------------
-# 9️⃣ MAIN TRAINING с безопасным прерыванием
+# 9️⃣ Вспомогательные функции (должны быть ДО обучения)
+# ------------------------------
+def kl_loss(z_p, logs_q, m_p, logs_p, y_mask):
+    kl = logs_p - logs_q - 0.5
+    kl += 0.5 * ((z_p - m_p) ** 2) * torch.exp(-2. * logs_p)
+    kl = torch.sum(kl * y_mask.float())
+    denom = torch.sum(y_mask.float())
+    return kl / (denom + 1e-8)
+
+def save_checkpoint(epoch, tag=""):
+    filename = f"{checkpoint_dir}/epoch_{epoch}{tag}.pt"
+    torch.save({
+        'epoch': epoch,
+        'model': synth.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'hparams': vars(hparams)
+    }, filename)
+    print(f"💾 Saved checkpoint: {filename}")
+
+# ------------------------------
+# 🔟 MAIN TRAINING с безопасным прерыванием
 # ------------------------------
 print(f"\n🚀 START TRAINING from epoch {start_epoch}!")
 
@@ -249,25 +269,3 @@ except KeyboardInterrupt:
     raise
 
 
-# ------------------------------
-# 🔟 Loss функция (должна быть определена)
-# ------------------------------
-def kl_loss(z_p, logs_q, m_p, logs_p, y_mask):
-    kl = logs_p - logs_q - 0.5
-    kl += 0.5 * ((z_p - m_p) ** 2) * torch.exp(-2. * logs_p)
-    kl = torch.sum(kl * y_mask.float())
-    denom = torch.sum(y_mask.float())
-    return kl / (denom + 1e-8)
-
-# ------------------------------
-# 🔟 Утилита сохранения чекпоинта
-# ------------------------------
-def save_checkpoint(epoch, tag=""):
-    filename = f"{checkpoint_dir}/epoch_{epoch}{tag}.pt"
-    torch.save({
-        'epoch': epoch,
-        'model': synth.state_dict(),
-        'optimizer': optimizer.state_dict(),
-        'hparams': vars(hparams)
-    }, filename)
-    print(f"💾 Saved checkpoint: {filename}")
