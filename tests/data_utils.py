@@ -19,7 +19,8 @@ def spectral_normalize_torch(mel_spec):
     return mel_spec
 
 def spectrogram_torch_safe(y, n_fft, hop_size, win_size):
-
+    """🔥 БЕЗ PAD — ПРЯМОЙ STFT!"""
+    # Безопасный STFT без padding проблем
     spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, 
                       window=torch.hann_window(win_size).to(y.device),
                       center=False, pad_mode='reflect', normalized=False, 
@@ -29,7 +30,7 @@ def spectrogram_torch_safe(y, n_fft, hop_size, win_size):
     return spec
 
 def librosa_mel_fn(sr=16000, n_fft=1024, n_mels=80, fmin=0.0, fmax=None):
-
+    """🔥 СТАТИЧЕСКАЯ MEL МАТРИЦА [80, 513]"""
     fmax = fmax if fmax else sr//2
     fft_bins = n_fft // 2 + 1
     
@@ -93,7 +94,8 @@ class TextAudioLoader(torch.utils.data.Dataset):
             raise ValueError(f"SR: {sr} != {self.sampling_rate}")
         
         audio_norm = audio / self.max_wav_value
-
+        
+        # 🔥 БЕЗОПАСНЫЙ STFT
         stft_spec = spectrogram_torch_safe(
             audio_norm, 
             self.filter_length, 
@@ -101,7 +103,7 @@ class TextAudioLoader(torch.utils.data.Dataset):
             self.win_length
         )  # [513, frames]
         
-  
+        # 🔥 СТАТИЧЕСКАЯ MEL МАТРИЦА
         mel_matrix = librosa_mel_fn(
             sr=self.sampling_rate,
             n_fft=self.filter_length,
@@ -111,11 +113,11 @@ class TextAudioLoader(torch.utils.data.Dataset):
         )
         mel_matrix = torch.from_numpy(mel_matrix).to(stft_spec.device, stft_spec.dtype)
         
-        #  MEL [80, frames]
+        # 🔥 MEL [80, frames]
         mel_spec = torch.matmul(mel_matrix, stft_spec)
         mel_spec = spectral_normalize_torch(mel_spec)
         
-        #print(f" MEL: {mel_spec.shape}")
+        #print(f"✅ MEL: {mel_spec.shape}")
         return mel_spec, audio_norm.unsqueeze(0)
 
     def get_text(self, text):
@@ -170,4 +172,3 @@ def get_dataset(filelist, hparams, num_workers=4, batch_size=16):
         shuffle=True, collate_fn=collate_fn, pin_memory=True
     )
     return dataset, loader
-
