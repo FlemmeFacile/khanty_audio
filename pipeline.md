@@ -20,7 +20,7 @@ The pipeline begins with unlabeled speech data from Finnish/Hungarian. This data
    Extract hidden states from Wav2Vec 2.0 (Layer 15) across the entire unlabelled Finnish audio corpus.
 
 3. **K-Means Training**  
-   Cluster W2V2 features to create dictionary of K=200 centroids (pseudo-phonemes). 
+   Cluster W2V2 features to create dictionary of K=128 centroids (pseudo-phonemes). 
 
 4. **Pseudo-Phoneme Labelling**  
    Assign nearest centroid ID to each frame of Finnish audio. Create VITS metadata file.
