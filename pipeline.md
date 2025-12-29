@@ -10,7 +10,7 @@ flowchart LR
     F --> M((Audio <br/> normalisation))
     M --> H
     Y -->H[Text Encoder<br/>Phoneme → Numeric<br/>Duration Predictor]
-    H --> I[Final Khanty TTS System]
+    H --> I[(Final Khanty TTS System)]
 ```
 
 ## Description
