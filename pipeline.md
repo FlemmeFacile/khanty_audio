@@ -10,7 +10,7 @@ flowchart LR
     F((Khanty Data <br/> 19 fairytales + 83,85 min MP3)) --> Y((character-based<br/>tokenisation))
     F --> M((Audio <br/> normalisation))
     M --> H
-    Y -->H[Text Encoder<br/>Phoneme → Numeric<br/>Duration Predictor]
+    Y --> H[Text Encoder<br/>Phoneme → Numeric<br/>Duration Predictor]
     H --> I[(Final Khanty TTS System)]
 ```
 
