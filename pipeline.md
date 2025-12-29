@@ -7,9 +7,9 @@ flowchart LR
     C --> D[Pre-training VITS<br/>on Pseudo-phonemes<br/>+ Finnish/Hungarian Audio]
     D --> H[Pre-trained VITS Model<br/>Decoder & Posterior Encoder Frozen]
     F((Khanty Data <br/> 19 fairytales + 83,85 min MP3)) --> Y((character-based<br/>tokenisation))
-    F --> M((Audio <br/> normalisation))
+    F --> M((audio <br/> normalisation))
     M --> H
-    Y --> H[Text Encoder<br/>Phoneme → Numeric<br/>Duration Predictor]
+    Y --> H[Khanty Fine-tuning<br/>Text Encoder + Duration]
     H --> I[(Final Khanty TTS System)]
 ```
 
