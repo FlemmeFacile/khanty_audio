@@ -1,5 +1,6 @@
-mermaid
 ```
+mermaid
+
 flowchart LR
     A((Finnish/Hungarian<br/>Unlabeled Speech<br/>Finnish-only / Hungarian-only / Combined)) --> B[Wav2vec 2.0<br/>Hidden Representations]
     B --> C[K-means Clustering<br/>Pseudo-phoneme Extraction<br/>K=128 + Merge]
