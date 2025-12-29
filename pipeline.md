@@ -1,20 +1,15 @@
 ```
 mermaid
-
 flowchart LR
     A((Finnish/Hungarian<br/>Unlabeled Speech<br/>)) --> K((Finnish/Hungarian<br/>Segmentation<br/>))
-    
     K --> B[Wav2vec 2.0<br/>Hidden Representations]
     B --> C[K-means Clustering<br/>Pseudo-phoneme Extraction<br/>K=128]
-    
     C --> D[Pre-training VITS<br/>on Pseudo-phonemes<br/>+ Finnish/Hungarian Audio]
     D --> H[Pre-trained VITS Model<br/>Decoder & Posterior Encoder Frozen]
-    
     F((Khanty Data <br/> 19 fairytales + 83,85 min MP3)) --> Y((character-based<br/>tokenisation))
     F --> M((Audio <br/> normalisation))
     M --> H
     Y -->H[Text Encoder<br/>Phoneme → Numeric<br/>Duration Predictor]
-
     H --> I[Final Khanty TTS System]
 ```
 
