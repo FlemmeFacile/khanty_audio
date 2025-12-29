@@ -1,3 +1,4 @@
+mermaid
 ```
 flowchart LR
     A((Finnish/Hungarian<br/>Unlabeled Speech<br/>)) --> K((Finnish/Hungarian<br/>Segmentation<br/>))
