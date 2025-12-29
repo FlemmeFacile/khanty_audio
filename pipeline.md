@@ -1,5 +1,4 @@
 ```
-mermaid
 flowchart LR
     A((Finnish/Hungarian<br/>Unlabeled Speech<br/>)) --> K((Finnish/Hungarian<br/>Segmentation<br/>))
     K --> B[Wav2vec 2.0<br/>Hidden Representations]
