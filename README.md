@@ -33,7 +33,7 @@ Comparison with:
 
 ### Evaluation Metrics
 - CER (Character Error Rate)
-- SECS (Single Embedded Character Score)
+- SECS (Speaker Embedding Cosine Similarity)
 - Subjective metrics (evaluated by project members and speakers of Ob-Ugric languages):
   - MOS (Mean Opinion Score)
   - SMOS (Similarity MOS)
